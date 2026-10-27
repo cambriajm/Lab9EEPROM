@@ -4,278 +4,430 @@
 //git
 //-Wl,-presetVect=0000h,-pisrVect=0004h,-pcode=0008h
 
+
 ; PIC16F883 Configuration Bit Settings
 
-; Assembly source line config statements
-
-; CONFIG1
-  CONFIG  FOSC = XT             ; Oscillator Selection bits (XT oscillator: Crystal/resonator on RA6/OSC2/CLKOUT and RA7/OSC1/CLKIN)
-  CONFIG  WDTE = OFF            ; Watchdog Timer Enable bit (WDT disabled and can be enabled by SWDTEN bit of the WDTCON register)
-  CONFIG  PWRTE = OFF           ; Power-up Timer Enable bit (PWRT disabled)
-  CONFIG  MCLRE = ON            ; RE3/MCLR pin function select bit (RE3 pin is MCLR)
-  CONFIG  CP = OFF              ; Code Protection bit
-  CONFIG  CPD = OFF             ; Data Code Protection bit
-  CONFIG  BOREN = OFF           ; Brown Out Reset Selection bits
-  CONFIG  IESO = OFF            ; Internal External Switchover mode is disabled
-  CONFIG  FCMEN = OFF           ; Fail-Safe Clock Monitor is disabled
-  CONFIG  LVP = OFF             ; Low Voltage Programming Enable bit
-
-; CONFIG2
-  CONFIG  BOR4V = BOR40V        ; Brown-out Reset set to 4.0V
-  CONFIG  WRT = OFF             ; Flash Program Memory Self Write Enable bits
+  CONFIG FOSC = XT
+  CONFIG WDTE = OFF
+  CONFIG PWRTE = OFF
+  CONFIG MCLRE = ON
+  CONFIG CP = OFF
+  CONFIG CPD = OFF
+  CONFIG BOREN = OFF
+  CONFIG IESO = OFF
+  CONFIG FCMEN = OFF
+  CONFIG LVP = OFF
+  CONFIG BOR4V = BOR40V
+  CONFIG WRT = OFF
 
 #include <xc.inc>
-    writeValue EQU	0x20
-    readValue EQU	0x21
-    selected EQU	0x22
-    CountIN EQU		0x23
-    Count EQU		0x24
-    uhhWhat EQU		0x25
- 
-    EEDAT EQU		0x00
- 
-; Reset Vector at 0000h. Execution starts here after reset.
+
+; RAM registers ---------------------------------------------------------------
+writeValue       EQU 0x20
+readValue        EQU 0x21
+selected         EQU 0x22
+CountIN          EQU 0x23
+Count            EQU 0x24
+uhhWhat          EQU 0x25
+
+ee_address       EQU 0x26
+ee_data          EQU 0x27
+ee_status        EQU 0x28
+
+timer   EQU 0x29
+current_address  EQU 0x2A
+
+; Status bits -----------------------------------------------------------------
+EEPROM_READ      EQU 0
+EEPROM_WRITE     EQU 1
+EEPROM_ERROR     EQU 2
+GIE_SAVE         EQU 3
+
+; uhhWhat bits: bit 0 = Select pressed, bit 1 = Write pressed
+;               bit 2 = Selection mode
+
 PSECT resetVect,class=CODE,delta=2
 ResetVector:
     GOTO Setup
 
-; Interrupt Vector at 0004h. Execution starts here after an interrupt.
 PSECT isrVect,class=CODE,delta=2
 InterruptVector:
+    RETFIE
 
-; Main code section starts at 0008h. User code goes here.
 PSECT code,class=CODE,delta=2
 
 Setup:
-    //bank 0--------------------------------------------------------------------
+    ;bank0----------------------------------------------------------------------
     BANKSEL PORTA
-    CLRF 0x05   ; Setting PORTA on reset to LOW
-    CLRF 0x06   ; Setting PORTB on reset to LOW
-    CLRF 0x07   ; Setting PORTC on reset to LOW
-    CLRF PORTC
-    
-    //bank 1--------------------------------------------------------------------
+    CLRF PORTA ;porta reset low 
+    CLRF PORTB ;portb reset low
+    CLRF PORTC ;portc reset low 
+    ;bank1----------------------------------------------------------------------
+    BANKSEL TRISA
+    BCF TRISA,0 ;ra0 outoput
+    BCF TRISA,1 ;ra1 output 
+    BCF TRISA,2 ;ra2 output 
     BANKSEL TRISB
-    BSF TRISB,0
-    BSF TRISB,1
-    BCF TRISA,1
-    BCF TRISA,2
-    CLRF TRISC   ; Setting TRISC on reset to LOW, making PORTc an output
+    BSF TRISB,0 ;rb0 input 
+    BSF TRISB,1 ;ra1 input 
+    BANKSEL TRISC
+    CLRF TRISC ;portc output for ligths 
+    ;bank3----------------------------------------------------------------------
+    BANKSEL WPUB
     MOVLW 0x03
-    MOVWF WPUB  ; Making PORTB have weak pull-ups
-    BCF OPTION_REG,7 ; enable weak pullups  
-    
-    //bank 3--------------------------------------------------------------------
+    MOVWF WPUB ;pull up resistors enabled on rb0 and rb1
+    BANKSEL OPTION_REG
+    MOVLW 0x07
+    MOVWF OPTION_REG       ; Pull-ups ON, Timer0 prescaler 1:256
+
     BANKSEL ANSEL
-    CLRF ANSEL
-    CLRF ANSELH
-   
-    //eecon---------------------------------------------------------------------
+    CLRF ANSEL ;clear analog, digital only 
+    CLRF ANSELH ;clear analog, digital only 
+
+    ; EEPROM setup-------------------------------------------------------------
     BANKSEL EECON1
-    BCF EECON1,7 ; select data eeprom 
-    BCF EECON1,2 ; disable eeprom writing
-    BCF EECON1,6 //disable eeprom writing
-    
-    //Initialize variable defaults----------------------------------------------
+    BCF EECON1,7 ;access data memory 
+    BCF EECON1,2 ;inhibit write to eeprom 
+    BANKSEL PIR2
+    BCF PIR2,4 ;write operation not completed 
+
+    ; Initialize variables-----------------------------------------------------
     BANKSEL selected
-    MOVLW 0x41   ; Default choice 'A'
-    MOVWF selected
-    CLRF uhhWhat ; Clean status register
-     
-    //restore saved eeprom value -----------------------------------------------
-    BANKSEL EEADR
-    MOVLW 0x00
-    MOVWF EEADR 
-    BANKSEL EECON1
-    BSF EECON1,0 //Initiate Read
-    BANKSEL EEDAT
-    MOVF EEDAT,w
-    BANKSEL selected
-    MOVWF selected  // Move read value directly to display at startup
-    
-    //what was the prev value if there was one----------------------------------
-    SUBLW 0x41  // Is it 'A'?
-    BANKSEL STATUS
-    BTFSC STATUS,2
-    GOTO StartupDisplayOk
-    
-    BANKSEL selected
-    MOVF selected,W
-    SUBLW 0x42  //Is it 'B'?
-    BANKSEL STATUS
-    BTFSC STATUS,2
-    GOTO StartupDisplayOk
-    
     MOVLW 0x41
-    BANKSEL selected
-    MOVWF selected
+    MOVWF selected ;move default a to output 
+    CLRF ee_status
+    CLRF uhhWhat
+    CLRF timer
+    CLRF current_address 
 
-StartupDisplayOk:
-    CLRF uhhWhat //reg cleaned wooo
-    BANKSEL selected
-    MOVF selected,W
-    BANKSEL PORTC
-    MOVWF PORTC //update the output
-    
+    ; Read saved value----------------------------------------------------------
+    MOVF current_address,W
+    MOVWF ee_address
+    CALL EEPROMRead
+    CALL DisplayStored
+
+;-------------------------------------------------------------------------------
 Main:
-    BANKSEL PORTB 
-    BTFSC PORTB,1   // is button write pushed
-    GOTO CheckRead  // NAAAAAAAA its not pushed so main repeats 
-    
-    CALL Delay      // Yes, debounce the button 
+    BANKSEL PORTA
+    BSF PORTA,1
+    BCF PORTA,1 ;toggle led when main runs 
+    BANKSEL ee_status
+    BTFSS ee_status,EEPROM_WRITE ;still writing? 
+    GOTO ErrorLED
+    BANKSEL PIR2
+    BTFSS PIR2,4 ;timer write done? 
+    GOTO ErrorLED
+    CALL EEPROMVerifyWrite 
+
+ErrorLED:
+    BANKSEL PORTA
+    BCF PORTA,2
+    BANKSEL ee_status
+    BTFSC ee_status,EEPROM_ERROR
+    BSF PORTA,2 ;turns on error light if error present 
+
+    BANKSEL uhhWhat
+    BTFSS uhhWhat,2 ;is the display value known? 
+    GOTO Buttons
+
+    BANKSEL INTCON
+    BTFSS INTCON,2 ;timer overflow flag set? 
+    GOTO Buttons ;no flag so no timer so check buttons 
+    BCF INTCON,2 ;clear that timer overflow flag
+
+    BANKSEL timer
+    INCF timer,F  ;how many times has the timer counted? update it 
+    MOVLW 15  ;gonna check against 15
+    SUBWF timer,W ;subtract from actual count 
+    BTFSS STATUS,0 ;check for carryout 
+    GOTO Buttons
+
+    BANKSEL uhhWhat
+    BCF uhhWhat,2 ;clear flag for unknown value 
+    BANKSEL PORTA
+    BCF PORTA,0  ;clear the write led because write is finished 
+    BANKSEL timer
+    CLRF timer
+
+Buttons: ;end up here if the timer is going 
+    BANKSEL ee_status
+    BTFSC ee_status,EEPROM_READ ;ignore buttons but check flags 
+    GOTO UpdateDisplay
+    BTFSC ee_status,EEPROM_WRITE
+    GOTO UpdateDisplay
+
     BANKSEL PORTB
-    BTFSC PORTB,1   // is it reaaaaally pushed? check again silly
-    GOTO CheckRead
-    
-   //while write button held it will show the selected value and allow toggle
+    BTFSC PORTB,0 ;is the select button pressed? 
+    GOTO SelectReleased
+
+    BANKSEL uhhWhat
+    BTFSC uhhWhat,0 ;do we know what the value is in the selected reg? 
+    GOTO WriteButton
+
+    CALL Delay
+    BANKSEL PORTB
+    BTFSC PORTB,0 ;last test but debounce style 
+    GOTO WriteButton
+
+    BANKSEL uhhWhat
+    BSF uhhWhat,0 ;if it didnt go to the buttons then its an unknown value 
+    CALL SelectAction
+    GOTO WriteButton
+
+SelectReleased:
+    BANKSEL uhhWhat
+    BCF uhhWhat,0 ;clear the unknown value flag 
+
+WriteButton:
+    BANKSEL PORTB
+    BTFSC PORTB,1 ;write button released? 
+    GOTO WriteReleased
+
+    BANKSEL uhhWhat
+    BTFSC uhhWhat,1 ;known value? 
+    GOTO UpdateDisplay
+
+    CALL Delay
+    BANKSEL PORTB
+    BTFSC PORTB,1 ;debounced for write button released 
+    GOTO UpdateDisplay
+
+    BANKSEL uhhWhat
+    BSF uhhWhat,1
+    BTFSS uhhWhat,2 ;the value is known? 
+    GOTO UpdateDisplay ; Ignore outside selection mode
+
+    BCF uhhWhat,2 ;clear the unknown to save the pending character 
+    BANKSEL PORTA
+    BCF PORTA,0 ;clear the ra0 led because the value has been written 
+    BANKSEL timer
+    CLRF timer ;clear timer tick 
+
+    BANKSEL current_address
+    MOVF current_address,W 
+    BANKSEL ee_address
+    MOVWF ee_address
     BANKSEL selected
-    MOVF selected,W
-    BANKSEL PORTC
-    MOVWF PORTC //the value will show on the display
-    
-    // is the select button toggling or being pressed 
-    BANKSEL PORTB
-    BTFSC PORTB,0   //button pressed? 
-    GOTO Main      //nope keep spinning
-    
-    CALL Delay      // no bounce 
-    BANKSEL PORTB
-    BTFSC PORTB,0
+    MOVF selected,W ;move the selected button value to the eeprom data 
+    BANKSEL ee_data
+    MOVWF ee_data
+    CALL EEPROMWrite
+    GOTO UpdateDisplay
+
+WriteReleased:
+    BANKSEL uhhWhat
+    BCF uhhWhat,1 ;clear unknown flag 
+
+UpdateDisplay:
+    BANKSEL uhhWhat
+    BTFSC uhhWhat,2 ;test unknown 
+    GOTO DisplayPending
+
+    BANKSEL ee_status
+    BTFSC ee_status,EEPROM_WRITE ;check status of written value 
     GOTO Main
-    
-    //now we toggle
-    BANKSEL selected
-    MOVLW 0x03
-    XORWF selected,1 ; this will toggle :)
-    
-WaitSelectRelease:
-    BANKSEL PORTB
-    BTFSS PORTB,0  //chills here until the selection is made 
-    GOTO WaitSelectRelease
-    GOTO CheckWrite
-    CALL Delay     //no bounce 
-    GOTO Main 
-    
-CheckRead:
-    BANKSEL uhhWhat //gotta see if the value is known
-    BTFSS uhhWhat,1 //write button held down?
-    BCF uhhWhat,1
-    GOTO ContinuousRead //na jsut read 
-     
-    CALL Delay //debounce when released 
-    BANKSEL PORTB
-    BTFSS PORTB,1 //no bounce that guy is an error ! 
-    GOTO Main        
-    
-    BANKSEL uhhWhat
-    BCF uhhWhat,1 //clWaitSelectRelease 
-//cearing the unknown so no ? 
-    GOTO CheckWrite
 
-ContinuousRead:
-    BANKSEL PORTA
-    BSF PORTA,1    //read diagnostic high 
-    BANKSEL uhhWhat
-    BSF uhhWhat,1 //for the unknown vlaue 
-    
-    BANKSEL EEADR
-    MOVLW   0x00
-    MOVWF   EEADR
-    BANKSEL EECON1
-    BSF     EECON1,0   //reading what ever is stored in eeprom 
-    BANKSEL EEDAT
-    MOVF    EEDAT,W
-    MOVWF   readValue
-    BANKSEL PORTA
-    BCF PORTA,1
-   //here checks which number it will show 
-    BANKSEL readValue
-    MOVF    readValue,W
-    SUBLW   0x41      //subtract a from the read value 
-    BANKSEL STATUS
-    BTFSC   STATUS,2    //if its zero then its a
-    GOTO    Select      //ITS A 
-    
-    BANKSEL readValue
-    MOVF    readValue,W
-    SUBLW   0x42       //ok is the value b
-    BANKSEL STATUS
-    BTFSC   STATUS,2    //is it zero ?
-    GOTO    Select     //ITS B
-    
-    ///who is this guy? do a question mark 
-    BANKSEL uhhWhat
-    BSF     uhhWhat,0
-    GOTO    Select
- 
-CheckWrite:
-    BANKSEL EEADR
-    MOVLW   0x00       //read whats in the eeprom 
-    MOVWF   EEADR
-    BANKSEL selected
-    MOVF    selected,W
-    BANKSEL EEDAT
-    MOVWF   EEDAT
-    BANKSEL PORTA
-    BSF     PORTA,2    //write diag 
-    BANKSEL EECON1
-    BSF     EECON1,2    ; Enable EE writes (WREN = 1)
-     
-    ; Required Uninterrupted Unlock Sequence
-    MOVLW   0x55
-    MOVWF   EECON2
-    MOVLW   0xAA
-    MOVWF   EECON2
-    BSF     EECON1,1    ; Trigger Write (WR = 1)
-   
-Wait:
-    BTFSC   EECON1,1    ; Poll WR bit until hardware sets it to 0
-    GOTO    Wait
-    BCF     EECON1,2    ; Disable further writing (WREN = 0)
-    BANKSEL PORTA
-    BCF PORTA,2           
-    GOTO    Main
-      
-Select:
-    
-    BANKSEL uhhWhat
-    BTFSC   uhhWhat,0
-    GOTO    DisplayHUH
-   
-    BANKSEL readValue
-    MOVF    readValue,W
-    SUBLW   0x42
-    BANKSEL STATUS
-    BTFSC   STATUS,2    ; Is Zero flag set? (Does readValue == 0x42?)
-    GOTO    DisplayB    ; Yes, go to B
-    GOTO    DisplayA    ; No, go to A
-    
-DisplayA:
-    MOVLW   0x41
-    BANKSEL PORTC
-    MOVWF   PORTC
-    GOTO    Main 
-    
-DisplayB:
-    MOVLW   0x42
-    BANKSEL PORTC
-    MOVWF   PORTC
-    GOTO    Main 
-    
-DisplayHUH:
-    MOVLW   0x3F        ; Show ASCII '?' (0x3F) for unrecognized EEPROM values
-    BANKSEL PORTC
-    MOVWF   PORTC
-    BANKSEL uhhWhat
-    BCF     uhhWhat,0   ; Clear bad data flag
-    GOTO    Main
+    BANKSEL current_address
+    MOVF current_address,W
+    BANKSEL ee_address
+    MOVWF ee_address ;move the value to the temp reg to move to display
+    CALL EEPROMRead 
+    CALL DisplayStored
+    GOTO Main
 
+DisplayPending:
+    BANKSEL selected
+    MOVF selected,W ;move the value to display 
+    BANKSEL PORTC
+    MOVWF PORTC
+    GOTO Main
+
+SelectAction:
+    BANKSEL uhhWhat
+    BTFSC uhhWhat,2
+    GOTO Toggle
+
+    BSF uhhWhat,2
+    BANKSEL selected
+    MOVLW 0x41
+    MOVWF selected
+    BANKSEL PORTA
+    BSF PORTA,0
+    GOTO ResetTimer
+
+Toggle:
+    BANKSEL selected
+    MOVLW 0x03 
+    XORWF selected,F
+
+ResetTimer:
+    BANKSEL timer
+    CLRF timer ;clear the timer tick value 
+    BANKSEL TMR0
+    CLRF TMR0 ;clear timer 
+    BANKSEL INTCON
+    BCF INTCON,2 ;clear timer overflow flag 
+    RETURN
+
+DisplayStored:
+    BANKSEL ee_data
+    MOVF ee_data,W
+    XORLW 0x41
+    BTFSC STATUS,2 ;after being xored is it not zero? 
+    GOTO DisplayA ;if its zero go to a 
+
+    BANKSEL ee_data
+    MOVF ee_data,W
+    XORLW 0x42
+    BTFSC STATUS,2 ;after being xored with 42 is it zero? 
+    GOTO DisplayB ;if zero it goes to b 
+
+    MOVLW 0x3F ;if a and b arent valid move the questionmark 
+    GOTO ShowCharacter
+
+DisplayA: ;disoplay a just moves the ascii value 
+    MOVLW 0x41
+    GOTO ShowCharacter
+
+DisplayB:; display b jsut moves the ascii value 
+    MOVLW 0x42
+
+ShowCharacter: ;take the moved value to display it 
+    BANKSEL PORTC
+    MOVWF PORTC
+    RETURN
+
+EEPROMRead: ;read eeprom 
+    BANKSEL ee_status
+    BSF ee_status,EEPROM_READ
+
+    BANKSEL ee_address
+    MOVF ee_address,W
+    BANKSEL EEADR
+    MOVWF EEADR
+
+    BANKSEL EECON1
+    BCF EECON1,7
+    BSF EECON1,0
+    BANKSEL EEDATA
+    MOVF EEDATA,W
+    BANKSEL ee_data
+    MOVWF ee_data
+
+    BANKSEL ee_status
+    BCF ee_status,EEPROM_READ
+    RETURN
+
+EEPROMWrite:
+    BANKSEL ee_status
+    BTFSC ee_status,EEPROM_WRITE
+    RETURN
+
+    BANKSEL PIR2
+    BTFSC PIR2,4
+    RETURN
+
+    BANKSEL ee_address
+    MOVF ee_address,W
+    BANKSEL EEADR
+    MOVWF EEADR
+    BANKSEL EECON1
+    BCF EECON1,7
+    BSF EECON1,0
+    BANKSEL EEDATA
+    MOVF EEDATA,W
+    BANKSEL ee_data
+    XORWF ee_data,W
+    BTFSC STATUS,2
+    RETURN
+
+    BANKSEL ee_status
+    BSF ee_status,EEPROM_WRITE
+    BCF ee_status,GIE_SAVE
+
+    BANKSEL INTCON
+    BTFSS INTCON,7
+    GOTO StartWrite
+    BANKSEL ee_status
+    BSF ee_status,GIE_SAVE
+    BANKSEL INTCON
+    BCF INTCON,7
+
+StartWrite:
+    BANKSEL ee_address
+    MOVF ee_address,W
+    BANKSEL EEADR
+    MOVWF EEADR
+    BANKSEL ee_data
+    MOVF ee_data,W
+    BANKSEL EEDATA
+    MOVWF EEDATA
+
+    BANKSEL EECON1
+    BCF EECON1,7
+    BSF EECON1,2
+
+    BANKSEL EECON2
+    MOVLW 0x55
+    MOVWF EECON2
+    MOVLW 0xAA
+    MOVWF EECON2
+    BSF EECON1,1
+
+    BANKSEL ee_status
+    BTFSS ee_status,GIE_SAVE
+    GOTO RestoreDone
+    BANKSEL INTCON
+    BSF INTCON,7 ;set the global interrutps again back to normal 
+
+RestoreDone:
+    BANKSEL ee_status
+    BCF ee_status,GIE_SAVE ;clear the flag for the gie save 
+    RETURN
+
+EEPROMVerifyWrite:
+    BANKSEL ee_address
+    MOVF ee_address,W
+    BANKSEL EEADR
+    MOVWF EEADR
+    BANKSEL EECON1
+    BCF EECON1,7
+    BSF EECON1,0
+
+    BANKSEL EEDATA
+    MOVF EEDATA,W
+    
+    ;MOVLW 0xFF 
+    
+    BANKSEL ee_data
+    XORWF ee_data,W
+    
+    BTFSC STATUS,2
+    GOTO VerifyOK
+
+    BANKSEL ee_status
+    BCF ee_status,EEPROM_WRITE
+    BSF ee_status,EEPROM_ERROR
+    GOTO VerifyEnd
+
+VerifyOK:
+    BANKSEL ee_status
+    CLRF ee_status ;clear the status of the ee flag 
+
+VerifyEnd:
+    BANKSEL PIR2
+    BCF PIR2,4 ;clear int flag 
+    BANKSEL EECON1
+    BCF EECON1,2 ;disable write 
+    RETURN
+    
+; debounce delay------------------------------------------------------
 Delay:
     CALL Delay5ms
     CALL Delay5ms
     RETURN
-    
-Delay5ms: 
+
+Delay5ms:
     MOVLW 0x5E
     MOVWF Count
 Delay5msLoop:
